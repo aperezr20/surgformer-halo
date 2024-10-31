@@ -9,6 +9,7 @@ from timm.utils import accuracy, ModelEma
 import utils
 from datetime import datetime
 from scipy.special import softmax
+from sklearn.metrics import f1_score
 
 
 def train_class_batch(model, samples, target, criterion):
@@ -60,6 +61,7 @@ def train_one_epoch(
     for data_iter_step, (samples, targets, _, _) in enumerate(
         metric_logger.log_every(data_loader, print_freq, header)
     ):
+    
         step = data_iter_step // update_freq
         if step >= num_training_steps_per_epoch:
             continue
@@ -177,18 +179,19 @@ def validation_one_epoch(data_loader, model, device):
 
     # switch to evaluation mode
     model.eval()
-
+    predictions = []
+    gt = []
     for batch in metric_logger.log_every(data_loader, 10, header):
         videos = batch[0]
         target = batch[1]
         flags = batch[3]
 
         videos = videos.to(device, non_blocking=True)
-        target = target.to(device, non_blocking=True)
+        target = target.to(device, non_blocking=True)[:, 8]
 
         # compute output
         with torch.cuda.amp.autocast():
-            output = model(videos)
+            output = model(videos)[:, 8, :]  
             loss = criterion(output, target)
         
         # for i in range(output.size(0)):
@@ -200,19 +203,48 @@ def validation_one_epoch(data_loader, model, device):
         #         elif target[i] == 2:
         #             output.data[i] = torch.tensor([0, 0, 1, 0, 0, 0, 0])
 
+        # Accuracy calculation (acc1, acc5)
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
+        # Convert logits to class predictions
+        _, preds = torch.max(output, 1)  # Get the predicted class
+
+        # Convert to numpy for sklearn F1 calculation
+        preds_np = preds.cpu().numpy().tolist()
+        target_np = target.cpu().numpy().tolist()
+        
+        predictions.extend(preds_np)
+        gt.extend(target_np)
+
+        # Get the batch size from videos
         batch_size = videos.shape[0]
+
+        # Update the loss and accuracy metrics
         metric_logger.update(loss=loss.item())
         metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
         metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
+
+        # Update the macro F1 metric
+        #metric_logger.meters["macro_f1"].update(macro_f1, n=batch_size)
+
+    f1_per_class = f1_score(gt, predictions, average=None) 
+    macro_f1 = f1_score(gt, predictions, average='macro')
+    metric_logger.meters["macro_f1"].update(macro_f1, n=batch_size)
+        # Optionally, if you want to update F1 per class, do so for each class
+    for class_idx, f1_class in enumerate(f1_per_class):
+        metric_logger.meters[f"f1_class_{class_idx}"].update(f1_class, n=batch_size)
+        print(f"* F1 Class {class_idx}: {f1_class:.3f}")
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print(
-        "* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}".format(
-            top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss
+        "* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f} Macro F1 {macro_f1.global_avg:.3f}".format(
+            top1=metric_logger.acc1,
+            top5=metric_logger.acc5,
+            losses=metric_logger.loss,
+            macro_f1=metric_logger.macro_f1  # Add macro F1 to the print statement
         )
     )
+
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
@@ -227,24 +259,27 @@ def final_phase_test(data_loader, model, device, file):
     # switch to evaluation mode
     model.eval()
     final_result = []
-
+    predictions = []
+    gt = []
     for batch in metric_logger.log_every(data_loader, 10, header):
         videos = batch[0]
         target = batch[1]
         ids = batch[2]
         flags = batch[3]
         videos = videos.to(device, non_blocking=True)
-        target = target.to(device, non_blocking=True)
+        target = target.to(device, non_blocking=True)[:, 8]
 
         # compute output
         with torch.cuda.amp.autocast():
-            output = model(videos)  
+            output = model(videos)[:, 8, :]  
             # Output: N,7
             # Target: N,
             loss = criterion(output, target)
-
+        
         for i in range(output.size(0)):
-            unique_id, video_id, frame_id = ids[i].strip().split('_')
+            #unique_id, video_id, frame_id = ids[i].strip().split('_')
+            unique_id, remainder = ids[i].strip().split('_', 1)
+            video_id, frame_id = remainder.rsplit('_', 1)
             # if flags[i]:
             #     if target[i] == 0:
             #         output.data[i] = torch.tensor([1, 0, 0, 0, 0, 0, 0])
@@ -262,12 +297,37 @@ def final_phase_test(data_loader, model, device, file):
             )
             final_result.append(string)
 
+        # Accuracy calculation (acc1, acc5)
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
+        # Convert logits to class predictions
+        _, preds = torch.max(output, 1)  # Get the predicted class
+
+        # Convert to numpy for sklearn F1 calculation
+        preds_np = preds.cpu().numpy().tolist()
+        target_np = target.cpu().numpy().tolist()
+        
+        predictions.extend(preds_np)
+        gt.extend(target_np)
+
+        # # F1 per class and macro F1 calculation
+        # f1_per_class = f1_score(target_np, preds_np, average=None)  # F1 score for each class
+        # macro_f1 = f1_score(target_np, preds_np, average='macro')  # Macro F1 score
+
+        # Get the batch size from videos
         batch_size = videos.shape[0]
+
+        # Update the loss and accuracy metrics
         metric_logger.update(loss=loss.item())
         metric_logger.meters["acc1"].update(acc1.item(), n=batch_size)
         metric_logger.meters["acc5"].update(acc5.item(), n=batch_size)
+
+        # # Update the macro F1 metric
+        # metric_logger.meters["macro_f1"].update(macro_f1, n=batch_size)
+
+        # # Optionally, if you want to update F1 per class, do so for each class
+        # for class_idx, f1_class in enumerate(f1_per_class):
+        #     metric_logger.meters[f"f1_class_{class_idx}"].update(f1_class, n=batch_size)
 
     if not os.path.exists(file):
         # os.mknod(file)  # 用于创建一个指定文件名的文件系统节点，暂时无权限
@@ -276,11 +336,23 @@ def final_phase_test(data_loader, model, device, file):
         f.write("{}, {}\n".format(acc1, acc5))
         for line in final_result:
             f.write(line)
+    
+    
+    f1_per_class = f1_score(gt, predictions, average=None) 
+    macro_f1 = f1_score(gt, predictions, average='macro')
+    metric_logger.meters["macro_f1"].update(macro_f1, n=batch_size)
+        # Optionally, if you want to update F1 per class, do so for each class
+    for class_idx, f1_class in enumerate(f1_per_class):
+        metric_logger.meters[f"f1_class_{class_idx}"].update(f1_class, n=batch_size)
+        print(f"* F1 Class {class_idx}: {f1_class:.3f}")
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print(
-        "* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}".format(
-            top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss
+        "* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f} Macro F1 {macro_f1.global_avg:.3f}".format(
+            top1=metric_logger.acc1,
+            top5=metric_logger.acc5,
+            losses=metric_logger.loss,
+            macro_f1=metric_logger.macro_f1  # Add macro F1 to the print statement
         )
     )
 

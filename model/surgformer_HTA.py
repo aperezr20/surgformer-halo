@@ -269,10 +269,12 @@ class Block(nn.Module):
         # 如果alpha以及beta初始化为0，则xs、xt初始化为0, 在训练过程中降低了学习难度；
         # 仿照其余模型可以使用alpha.sigmoid()以及beta.sigmoid()；
         B, M, C = x.shape
+
         assert T * K + 1 == M
 
         # Temporal_Self_Attention
         xt = x[:, 1:, :]
+
         xt = rearrange(xt, "b (k t) c -> (b k) t c", t=T)
 
         res_temporal = self.drop_path(
@@ -424,12 +426,14 @@ class VisionTransformer(nn.Module):
 
         self.norm = norm_layer(embed_dim)
 
+        self.window_size = 16
+
         # Classifier head
         self.fc_dropout = (
             nn.Dropout(p=fc_drop_rate) if fc_drop_rate > 0 else nn.Identity()
         )
         self.head = (
-            nn.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+            nn.Linear(embed_dim, num_classes * self.window_size) if num_classes > 0 else nn.Identity()
         )
 
         trunc_normal_(self.pos_embed, std=0.02)
@@ -503,8 +507,11 @@ class VisionTransformer(nn.Module):
         return x[:, 0]
 
     def forward(self, x):
+        
         x = self.forward_features(x)
         x = self.head(self.fc_dropout(x))
+        bs, _ = x.shape
+        x = x.reshape((bs,self.window_size,self.num_classes))
         return x
 
 

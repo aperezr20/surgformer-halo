@@ -193,4 +193,3 @@ dependencies:
       - werkzeug==3.0.0
       - wrapt==1.16.0
       - zipp==3.16.2
-prefix: /jhcnas1/yangshu/anaconda3/envs/videomae

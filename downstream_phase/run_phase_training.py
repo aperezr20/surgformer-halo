@@ -11,11 +11,12 @@ from collections import OrderedDict
 import torch.nn.functional as F
 import sys
 
-sys.path.append("/home/yangshu/Surgformer")
+sys.path.append("/mnt/hdd1/ale/Surgformer")
 
 from datasets.transforms.mixup import Mixup
 from timm.models import create_model
-from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
+from timm.loss import LabelSmoothingCrossEntropy
+from downstream_phase.loss import SoftTargetCrossEntropy
 from timm.utils import ModelEma
 from datasets.transforms.optim_factory import (
     create_optimizer,
@@ -318,7 +319,7 @@ def get_args():
     parser.add_argument(
         "--data_set",
         default="AutoLaparo",
-        choices=["Cholec80", "AutoLaparo"],
+        choices=["Cholec80", "AutoLaparo", 'halo'],
         type=str,
         help="dataset",
     )
@@ -463,6 +464,7 @@ def main(args, ds_init):
         is_train=True, test_mode=False, fps=args.data_fps, args=args
     )  # Cholec80前40个数据集用于训练：2157640
 
+
     # 是否在训练时在验证集上测试性能
     if args.disable_eval_during_finetuning:
         dataset_val = None
@@ -473,7 +475,9 @@ def main(args, ds_init):
     dataset_test, _ = build_dataset(
         is_train=False, test_mode=True, fps=args.data_fps, args=args
     )  # Cholec80后40个数据集用于测试：2452890
-
+    # for i in dataset_val:
+    #     breakpoint()
+    #     continue
     print("Train Dataset Length: ", len(dataset_train))
     print("Val Dataset Length: ", len(dataset_val))
     print("Test Dataset Length: ", len(dataset_test))
@@ -512,7 +516,8 @@ def main(args, ds_init):
         log_writer = None
 
     collate_func = None
-
+    # for i in dataset_val:
+    #     print(i)
     data_loader_train = torch.utils.data.DataLoader(
         dataset_train,
         sampler=sampler_train,
@@ -793,7 +798,12 @@ def main(args, ds_init):
 
     if mixup_fn is not None:
         # smoothing is handled with mixup label transform
-        criterion = SoftTargetCrossEntropy()
+        weights = [0.06612997, 1.96207015, 1.32271326,
+                   1.08573387,1.11185168,1.89170305,
+                   1.43022585, 0.53671073, 0.26228702, 
+                   0.89415059, 0.43642384]
+        weights = torch.tensor(weights, dtype=torch.float32).to(device)
+        criterion = SoftTargetCrossEntropy(class_weights=weights)
     elif args.smoothing > 0.0:
         criterion = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
     else:
